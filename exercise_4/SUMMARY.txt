@@ -1,0 +1,103 @@
+================================================================================
+EXERCISE 4 — DISCRETE & MASKED IMAGE MODELS (VQ-VAE + MIM)
+Course: Generative AI and Visual Synthesis (SoSe 2026)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. WHAT THIS EXERCISE IS ABOUT
+--------------------------------------------------------------------------------
+Two modern ideas, both on Fashion-MNIST:
+  TASK 1 — VQ-VAE (Vector-Quantized VAE): an autoencoder whose latent code is
+           DISCRETE. Instead of continuous numbers, each spatial location of the
+           latent is snapped to the nearest entry in a learned "codebook" (a
+           dictionary of vectors). This is the foundation of token-based image
+           generators (DALL-E, VQGAN, etc.).
+  TASK 2 — Masked Image Modeling (MIM): hide random square patches of an image
+           and train a network to fill them back in. This is the vision version
+           of how language models learn by predicting masked words (BERT/MAE).
+
+--------------------------------------------------------------------------------
+2. KEY CONCEPTS / THEORY
+--------------------------------------------------------------------------------
+VQ-VAE PIPELINE:  encoder -> z_e (continuous) -> QUANTIZE to nearest codebook
+vector -> z_q (discrete) -> decoder -> image.
+
+THREE LOSS TERMS (memorize):
+  - reconstruction loss (MSE): output should match input.
+  - codebook loss: move the codebook vectors toward the encoder outputs.
+    = MSE(z_q, stop_grad(z_e))
+  - commitment loss (* beta, default 0.25): keep the encoder output from drifting
+    away from the codebook. = MSE(z_e, stop_grad(z_q))
+  vq_loss = codebook_loss + beta * commitment_loss; total = recon + vq_loss.
+
+STRAIGHT-THROUGH ESTIMATOR (the crucial trick): picking the nearest code with
+argmin is non-differentiable (no gradient). Fix:
+  z_q = z_e + (z_q - z_e).detach()
+Forward value is still z_q, but gradients flow straight through to z_e as if it
+were the identity. This lets the encoder train despite the hard, discrete lookup.
+
+CODEBOOK COLLAPSE: a failure mode where the model only ever uses a few codes;
+the usage histogram shows a few tall spikes and many empty bins.
+
+WHY RANDOM CODE SAMPLES LOOK BAD: real images have spatial structure between
+patches; picking codes independently at random ignores that, giving incoherent
+images. To sample properly you need a SECOND model (a "prior", e.g. a
+Transformer) that learns which code arrangements are realistic.
+
+MIM CONCEPTS:
+  - Patch mask: split the image into patches, randomly mark some as "masked".
+  - Masked loss: compute MSE ONLY on the masked pixels (the model is graded only
+    on what it had to guess).
+  - Mask ratio: higher ratio = less context = harder = blurrier reconstructions
+    (model defaults to a mean/average guess when uncertain).
+
+LIBRARIES NEW HERE: torch.nn.Embedding as a codebook, torch.argmin, torch.bincount
+(usage histogram), repeat_interleave (expand patch mask to pixels), torch.randperm.
+
+--------------------------------------------------------------------------------
+3. CORE CODE BLOCKS (the TODOs)
+--------------------------------------------------------------------------------
+TASK 1 — VQ-VAE:
+  1.1 Data: FashionMNIST normalized to [-1,1], train/test loaders.
+  1.2 Encoder (conv stack -> (B, embedding_dim, 7, 7)) and Decoder forward passes.
+  1.3 VectorQuantizer.forward (the heart of the exercise):
+        - flatten z_e to (N, embedding_dim).
+        - squared Euclidean distance to every codebook vector.
+        - indices = argmin(distances); look up -> z_q.
+        - codebook_loss + beta*commitment_loss.
+        - straight-through: z_q = z_e + (z_q - z_e).detach().
+        - return z_q, vq_loss, indices.
+  1.4 VQVAE module = Encoder + VectorQuantizer + Decoder; returns dict with
+      x_recon, vq_loss, indices.
+  1.5 train_one_epoch: total loss = MSE(recon, images) + vq_loss.
+  1.6 Train a few epochs; plot total/recon/vq loss curves.
+  1.7 Visualize reconstructions; comment (shapes kept, fine textures lost).
+  1.8 Codebook usage histogram (bincount); report #codes used + most frequent;
+      explain codebook collapse.
+  1.9 Decode RANDOM code grids; explain why they look worse than reconstructions.
+
+TASK 2 — Masked Image Modeling:
+  2.1 create_patch_mask: choose masked patches per image, build a pixel_mask
+      (1=masked), replace masked pixels with mask_value.
+  2.2 Visualize masking at ratios 0.25/0.5/0.75; describe effect.
+  2.3 MaskedConvAutoencoder forward pass (conv encoder/decoder, Tanh output).
+  2.4 masked_mse_loss = MSE computed only where pixel_mask==1; train + plot loss.
+  2.5 Evaluate reconstructions across mask ratios; explain why more masking =
+      harder (less surrounding context for the conv receptive field).
+
+--------------------------------------------------------------------------------
+4. HOW IT FITS THE BIG PICTURE
+--------------------------------------------------------------------------------
+- VQ-VAE = the Ex2/Ex3 autoencoder with a DISCRETE latent. It sits alongside the
+  VAE (continuous latent, Ex3) and contrasts with GANs (Ex5) and flows (Ex6/7).
+- The straight-through estimator is a general trick for training through
+  non-differentiable operations — a likely exam favorite.
+- "You need a second model to sample the latent prior" (Task 1.9) is the key
+  insight behind today's token-based image generators.
+- MIM is self-supervised learning for vision; conceptually it's the masking idea
+  you also see in Ex7 (storing/recovering missing information) and is the modern
+  alternative to GAN/VAE pretraining.
+
+EXAM TAKEAWAY: Draw the VQ-VAE pipeline, write all three loss terms, and explain
+the straight-through estimator and codebook collapse. For MIM, explain masked-only
+loss and the effect of mask ratio.
