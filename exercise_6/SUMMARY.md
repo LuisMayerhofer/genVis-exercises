@@ -1,0 +1,103 @@
+# Exercise 6 — Normalizing Flows (RealNVP)
+
+> Course: Generative AI and Visual Synthesis (SoSe 2026)
+
+## 1. What this exercise is about
+
+The fourth generative family: **normalizing flows**. The idea: build an INVERTIBLE
+neural network `f` that maps data `x` to a latent `z` with a simple known distribution
+(standard Gaussian). Because `f` is invertible, you can go both ways:
+
+- `x -> z = f(x)`     (encode; used for training via likelihood)
+- `z -> x = f^{-1}(z)`  (sample: draw `z ~ N(0,I)`, invert to get a new image)
+
+Unlike VAEs and GANs, a flow can compute the EXACT likelihood `p(x)` of any data
+point. You implement RealNVP (a flow built from "affine coupling" layers) and
+apply it to 2D toy data (two moons) and 8×8 digit images.
+
+## 2. Key concepts / theory
+
+**Change of variables (why flows work):** if `z = f(x)`, then
+
+```
+log p_X(x) = log p_Z(z) + log|det(Jacobian of f)|
+```
+
+To train, MAXIMIZE this likelihood = MINIMIZE the negative log-likelihood (NLL).
+With a standard-Gaussian latent the loss simplifies (dropping constants) to:
+
+```
+NLL = mean( 0.5 * ||z||^2  -  log_det )
+```
+
+**Affine coupling layer** (the trick that makes `f` both expressive AND invertible):
+
+- Split the input into two halves `x1, x2`.
+- Keep `x1` unchanged: `y1 = x1`.
+- Transform `x2` using functions of `x1` only:
+  `y2 = x2 * exp(s) + t`, where `(s, t) = subnet(x1)`, `s = tanh(s_tilde)`.
+- This is trivially invertible: `x2 = (y2 - t) * exp(-s)`.
+- The Jacobian is triangular, so `log|det| = sum(s)` — cheap to compute!
+- tanh on the log-scale keeps training numerically stable.
+
+**Swap layers:** since each coupling leaves one half untouched, you SWAP the halves
+between layers so that, after several blocks, every dimension gets transformed.
+
+**Stacking:** more coupling blocks + bigger hidden subnets = more expressive flow.
+
+**Conditioning (Task 3):** feed the one-hot class label into each coupling subnet so
+the flow models `p(x | y)` and you can generate a chosen digit.
+
+> **Libraries new here:** `sklearn.datasets.make_moons` and `load_digits` (toy data),
+> `torch.chunk` (split halves), `F.one_hot` (labels for the conditional flow).
+
+## 3. Core code blocks (the TODOs)
+
+### Task 1 — Two moons with RealNVP
+
+- `subnet_constructor`: a 2-hidden-layer MLP (Linear-ReLU-Linear-ReLU-Linear).
+- `AffineCouplingLayer.forward`: split into `x1,x2`; `(s_tilde,t)=subnet(x1)`;
+  `s=tanh(s_tilde)`; forward `y2=x2*exp(s)+t` and `log_det=sum(s)`; reverse
+  `x2=(y2-t)*exp(-s)`.
+- `RealNVP`: stack `n_blocks` coupling layers + swaps; forward accumulates
+  `total_log_det`; inverse runs blocks in REVERSE order (undo swap then coupling).
+- `nll_loss`: `mean(0.5*||z||^2 - log_det)`.
+- Inverse check: `f^{-1}(f(x))` should reproduce `x` (max error ~0).
+- Experiment grid over hidden size {16,64,128} × blocks {2,5,10}; plot samples;
+  inspect latent space (`z=f(x)` should look Gaussian).
+- Comment: hidden dimension matters more than #blocks for forming the moons;
+  latent codes are ~N(0,I) but the two classes remain separable in the cloud.
+
+### Task 2 — Digits with RealNVP (unconditional)
+
+- Flatten 8×8 images to `R^64`; train `RealNVP(64, hidden=128, blocks=8)` for 2000
+  epochs on ALL digits, then a SEPARATE model overfit to a single digit (5).
+- Comment: the single-digit model produces cleaner samples (easier job); the
+  all-digits model is recognizable but blurrier.
+
+### Task 3 — Conditional RealNVP
+
+- `ConditionalAffineCouplingLayer`: subnet now receives `concat(x1, one_hot_label)`.
+- `ConditionalRealNVP.forward/inverse`: one-hot encode labels, pass condition into
+  every coupling layer.
+- `train_conditional_realnvp` with NLL; generate samples for fixed labels 0..9.
+- Comment: conditioning lets you CHOOSE which digit to generate, at similar
+  quality to the unconditional all-digits model.
+
+## 4. How it fits the big picture
+
+- Completes the four generative families:
+  - **VAE (Ex3):** approximate likelihood, samples blurry.
+  - **GAN (Ex5):** no likelihood, samples sharp but unstable.
+  - **Flow (Ex6):** EXACT likelihood + exact invertibility, by construction.
+- Conditioning via labels is the same theme as the conditional VAE (Ex3) and
+  conditional GAN (Ex5), now applied to a flow → `p(x|y)`.
+- The affine-coupling machinery here is the EXACT prerequisite for Ex7, which
+  reuses coupling layers for disentanglement and for an image-space conditional
+  flow (cINN), and exploits the exact-likelihood property for classification and
+  anomaly detection.
+
+> **Exam takeaway:** State the change-of-variables formula and the resulting NLL loss;
+> explain the affine coupling layer (why it is invertible and why `log|det|=sum(s)`);
+> explain why swap layers are needed; know that flows give EXACT likelihood, unlike
+> VAEs/GANs.
