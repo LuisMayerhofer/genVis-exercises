@@ -59,37 +59,95 @@ Transformer) that learns which code arrangements are realistic.
 > **Libraries new here:** `torch.nn.Embedding` as a codebook, `torch.argmin`, `torch.bincount`
 > (usage histogram), `repeat_interleave` (expand patch mask to pixels), `torch.randperm`.
 
-## 3. Core code blocks (the TODOs)
+## 3. The core building blocks (what the code does and why)
 
-### Task 1 — VQ-VAE
+### The codebook — a learnable dictionary of vectors
 
-- **1.1** Data: FashionMNIST normalized to `[-1,1]`, train/test loaders.
-- **1.2** Encoder (conv stack → `(B, embedding_dim, 7, 7)`) and Decoder forward passes.
-- **1.3** `VectorQuantizer.forward` (the heart of the exercise):
-  - flatten `z_e` to `(N, embedding_dim)`.
-  - squared Euclidean distance to every codebook vector.
-  - `indices = argmin(distances)`; look up → `z_q`.
-  - `codebook_loss + beta*commitment_loss`.
-  - straight-through: `z_q = z_e + (z_q - z_e).detach()`.
-  - return `z_q, vq_loss, indices`.
-- **1.4** VQVAE module = Encoder + VectorQuantizer + Decoder; returns dict with
-  `x_recon, vq_loss, indices`.
-- **1.5** `train_one_epoch`: total loss = `MSE(recon, images) + vq_loss`.
-- **1.6** Train a few epochs; plot total/recon/vq loss curves.
-- **1.7** Visualize reconstructions; comment (shapes kept, fine textures lost).
-- **1.8** Codebook usage histogram (`bincount`); report #codes used + most frequent;
-  explain codebook collapse.
-- **1.9** Decode RANDOM code grids; explain why they look worse than reconstructions.
+The discrete latent is stored in an `nn.Embedding`, which is simply a lookup table
+of `K` learnable vectors (the "codes"):
 
-### Task 2 — Masked Image Modeling
+```python
+self.codebook = nn.Embedding(num_codes, embedding_dim)   # K vectors of size D
+```
 
-- **2.1** `create_patch_mask`: choose masked patches per image, build a `pixel_mask`
-  (1=masked), replace masked pixels with `mask_value`.
-- **2.2** Visualize masking at ratios 0.25/0.5/0.75; describe effect.
-- **2.3** `MaskedConvAutoencoder` forward pass (conv encoder/decoder, Tanh output).
-- **2.4** `masked_mse_loss` = MSE computed only where `pixel_mask==1`; train + plot loss.
-- **2.5** Evaluate reconstructions across mask ratios; explain why more masking =
-  harder (less surrounding context for the conv receptive field).
+Given an integer index, `self.codebook(index)` returns that row's vector. Training
+adjusts these vectors like any other weights.
+
+### Vector quantization — snapping to the nearest code
+
+This is the heart of the exercise. The encoder produces a continuous map `z_e` of
+shape `(B, D, 7, 7)`; quantization replaces each spatial location with its nearest
+codebook vector:
+
+```python
+flat = z_e.permute(0,2,3,1).reshape(-1, D)          # (N, D): one row per location
+dist = torch.cdist(flat, self.codebook.weight)       # distance to every code
+indices = dist.argmin(dim=1)                          # nearest code per location
+z_q = self.codebook(indices).view_as(z_e)            # look up -> quantized map
+```
+
+- **`torch.cdist`** computes the (Euclidean) distance from each encoder vector to
+  every codebook vector at once.
+- **`argmin`** picks the index of the closest code — this is the discrete "token".
+- looking those indices up in the codebook gives `z_q`, the quantized latent.
+
+### The two VQ losses and the straight-through estimator
+
+```python
+codebook_loss   = F.mse_loss(z_q, z_e.detach())      # move codes toward encoder
+commitment_loss = F.mse_loss(z_e, z_q.detach())      # keep encoder near codes
+vq_loss = codebook_loss + beta * commitment_loss     # beta ≈ 0.25
+
+z_q = z_e + (z_q - z_e).detach()                      # STRAIGHT-THROUGH trick
+```
+
+- **`.detach()`** cuts the gradient: `z_e.detach()` means "treat `z_e` as a constant
+  here". So the codebook loss only updates the *codes*, and the commitment loss
+  only updates the *encoder* — each term trains one side toward the other.
+- The **straight-through estimator** is the crucial line. `argmin` is not
+  differentiable, so no gradient could reach the encoder. By writing
+  `z_q = z_e + (z_q - z_e).detach()`, the *value* passed forward is still `z_q`, but
+  the `(z_q - z_e)` part is detached, so during backprop the gradient flows
+  straight through to `z_e` as if quantization were the identity.
+
+### Putting it together and detecting collapse
+
+The full `VQVAE.forward` is Encoder → VectorQuantizer → Decoder, and the total loss
+is `F.mse_loss(recon, images) + vq_loss`. To inspect codebook usage:
+
+```python
+counts = torch.bincount(indices, minlength=num_codes)   # how often each code used
+```
+
+**`torch.bincount`** tallies how many times each index was chosen. A healthy
+codebook spreads usage; **codebook collapse** shows up as a few huge bars and many
+zeros. Decoding *random* index grids (instead of encoder-produced ones) gives
+incoherent images, because real images need spatially-consistent code arrangements
+— which a separate "prior" model would have to learn.
+
+### Masked Image Modeling — building and using a mask
+
+```python
+n_masked = int(num_patches * mask_ratio)
+masked = torch.randperm(num_patches)[:n_masked]         # randomly choose patches
+patch_mask[masked] = 1
+pixel_mask = patch_mask.repeat_interleave(ph, 0).repeat_interleave(pw, 1)
+image[pixel_mask == 1] = mask_value                     # blank out masked pixels
+```
+
+- **`torch.randperm`** shuffles the patch indices so a random subset gets masked.
+- **`repeat_interleave`** expands the small per-patch mask up to full pixel
+  resolution (each patch becomes a `ph×pw` block of pixels).
+
+**The masked loss** grades the model only on what it had to guess:
+
+```python
+loss = F.mse_loss(recon[pixel_mask == 1], target[pixel_mask == 1])
+```
+
+By indexing with `pixel_mask == 1`, the MSE is computed **only over masked pixels**.
+A higher mask ratio leaves less surrounding context, so the network has to guess
+more and reconstructions get blurrier (it falls back to an average guess).
 
 ## 4. How it fits the big picture
 

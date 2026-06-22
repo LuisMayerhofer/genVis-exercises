@@ -41,45 +41,106 @@ gradient of the predicted class score w.r.t. the input image; large `|gradient|`
 > **Libraries new here:** `torchvision.models` (pretrained AlexNet + its weights and
 > preprocessing transforms), `PIL.Image` (load the photo).
 
-## 3. Core code blocks (the TODOs)
+## 3. The core techniques (what the code does and why)
 
-### Task 1 — Basic image manipulation (pure NumPy slicing)
+### Images as arrays — slicing and indexing
 
-- **1.1** Load `Wombat.jpg` → `np.array`; shape is `(H, W, 3)`.
-- **1.2** Explain shape (height, width, color channels) and show it.
-- **1.3** Center crop via slicing `img[y0:y1, x0:x1]`.
-- **1.4** Permute RGB channels: `img[:,:,perm]` with a random permutation.
-- **1.5** Grayscale via weighted sum: `np.dot(img, [0.299,0.587,0.114])`.
-- **1.6** Paste color crop back into the (3-channel) gray image.
-- **1.7** Resize by strided slicing `img[::2, ::4]` (1/2 height, 1/4 width).
+An image loaded with PIL and converted to a NumPy array has shape `(H, W, 3)`:
+height, width, and 3 color channels (R, G, B). Every pixel is a number (0–255 or
+0–1). Because it is just an array, you manipulate it with **slicing**:
 
-### Task 2 — Convolution by hand (NO built-in conv allowed)
+```python
+img[y0:y1, x0:x1]          # CROP: keep only rows y0..y1 and columns x0..x1
+img[:, :, perm]            # REORDER CHANNELS: perm is e.g. [2,0,1] -> swaps RGB
+img[::2, ::4]              # RESIZE by skipping: every 2nd row, every 4th column
+```
 
-- **2.1** `conv2d_gray(image, kernel)`: double loop over pixels; at each pixel take the
-  surrounding patch, multiply by kernel, sum → output pixel. Output is
-  smaller (no padding): `(H-n+1, W-n+1)`.
-- **2.2** `gaussian_kernel(n, sigma)`: build an `(n,n)` grid with meshgrid, apply the
-  Gaussian formula `exp(-(x^2+y^2)/(2 sigma^2))`, then **normalize** (divide by
-  sum so brightness is preserved). Apply it → blurred image.
-- **2.3** `conv2d_multi`: same idea but the patch and kernel have a channel dimension;
-  sum over space AND channels into one output channel.
-- **2.4** 1×1×3 kernel = the grayscale weights → proves grayscale IS a convolution.
-- **2.5** Written: limits of manual filters vs. learned filters.
+The slice `start:stop:step` selects a range; a bare `:` means "all of this axis".
+A `step` of 2 throws away every other pixel — a crude but instant downscale.
 
-### Task 3 — Looking inside a real CNN (AlexNet)
+**Grayscale as a weighted channel sum:**
 
-- **3.1** Load pretrained AlexNet; first conv layer weight shape `(64, 3, 11, 11)` =
-  64 filters, 3 input channels (RGB), 11×11 each.
-- **3.2** Visualize all 64 first-layer filters in an 8×8 grid (normalize each for
-  display).
-- **3.3** Written: filters show edges, color contrasts, intensity gradients — the
-  primitive building blocks for recognizing objects.
-- **3.4–3.7 Saliency map:**
-  - preprocess image with `weights.transforms()`; `unsqueeze(0)` to add batch.
-  - forward pass → `argmax` = predicted class.
-  - `input_batch.requires_grad_()`; `zero_grad()`; `score.backward()` → gradient.
-  - `saliency` = max over channels of `|gradient|`; visualize next to the image.
-  - Written: high saliency = pixels the model relied on most.
+```python
+gray = np.dot(img, [0.299, 0.587, 0.114])   # collapse 3 channels into 1
+```
+
+`np.dot` here multiplies each channel by its weight and sums them. Green is
+weighted most because human eyes are most sensitive to it. The result has shape
+`(H, W)` — the color dimension is gone.
+
+### Convolution by hand
+
+Convolution slides a small weight grid (the **kernel**) over the image. The core
+loop, with no padding, produces an output of size `(H-n+1, W-n+1)`:
+
+```python
+def conv2d_gray(image, kernel):
+    n = kernel.shape[0]
+    out = np.zeros((H - n + 1, W - n + 1))
+    for i in range(out.shape[0]):
+        for j in range(out.shape[1]):
+            patch = image[i:i+n, j:j+n]      # the n×n window under the kernel
+            out[i, j] = np.sum(patch * kernel)  # multiply & sum -> one pixel
+    return out
+```
+
+The key line is `np.sum(patch * kernel)`: element-wise multiply the window by the
+kernel, then add everything up into a single output pixel. That single operation,
+repeated everywhere, *is* convolution.
+
+**Building a Gaussian (blur) kernel:**
+
+```python
+ax = np.arange(n) - n // 2                  # coordinates centered on 0
+xx, yy = np.meshgrid(ax, ax)                # 2D grid of x and y offsets
+kernel = np.exp(-(xx**2 + yy**2) / (2 * sigma**2))
+kernel /= kernel.sum()                      # NORMALIZE so brightness is preserved
+```
+
+`np.meshgrid` turns two 1-D coordinate arrays into the full 2-D grid of (x, y)
+positions. The Gaussian formula gives the center the highest weight, neighbours
+less. **Normalizing** (dividing by the sum) is essential — otherwise the image
+would get brighter or darker. Larger `sigma` = wider, stronger blur.
+
+**Multi-channel convolution** adds a channel dimension to both the patch and the
+kernel, and sums over space *and* channels into one output value. A special case:
+a **1×1×3 kernel** has no spatial neighbours — it only mixes the 3 color channels.
+Using the grayscale weights `[0.299, 0.587, 0.114]` as a 1×1×3 kernel reproduces
+the grayscale conversion, proving grayscale *is* a convolution.
+
+### Looking inside a pretrained CNN (AlexNet)
+
+```python
+from torchvision.models import alexnet, AlexNet_Weights
+weights = AlexNet_Weights.DEFAULT
+model = alexnet(weights=weights)            # download a network trained on ImageNet
+```
+
+`torchvision.models` gives you famous networks **already trained**, so you can
+inspect what they learned without training anything. The first convolution layer's
+weights have shape `(64, 3, 11, 11)` = 64 separate filters, each looking at 3 RGB
+channels with an 11×11 window. Plotting these 64 filters as small images reveals
+edge detectors, color-contrast detectors, and gradients — the primitive features a
+network builds on.
+
+**Saliency map — what the network "looks at":**
+
+```python
+batch = weights.transforms()(img).unsqueeze(0)  # preprocess + add batch dim
+batch.requires_grad_()                           # ask torch to track gradients here
+score = model(batch)                             # forward pass -> class scores
+pred = score.argmax()                            # the predicted class index
+model.zero_grad()
+score[0, pred].backward()                        # gradient of that score w.r.t. input
+saliency = batch.grad.abs().max(dim=1)[0]        # strongest gradient across channels
+```
+
+The new idea is `requires_grad_()` + `backward()`: instead of training weights, we
+compute the gradient of the predicted class score **with respect to the input
+pixels**. `weights.transforms()` applies the exact resizing/normalization the
+network was trained with. Pixels with a large `|gradient|` are the ones that would
+most change the prediction if nudged — i.e. the pixels the model relied on. Taking
+the max over the channel dimension collapses RGB into one saliency heatmap.
 
 ## 4. How it fits the big picture
 

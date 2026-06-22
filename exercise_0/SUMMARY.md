@@ -39,24 +39,82 @@ will hit in later exercises is a **shape bug**, so this sheet is the foundation.
 - **H, W** = image height and width.
 - **Shape** = the tuple describing a tensor, e.g. `(B, C, H, W)`.
 
-## 3. Core code blocks (the TODOs)
+## 3. The core tensor toolkit (what every operation does)
 
-Each task is a one-liner that exercises a fundamental tensor skill:
+These are the fundamental tensor operations you will use in every exercise.
+Learn what each one does and *why* you reach for it.
 
-0. **Setup** → import torch/numpy, print `torch.__version__`.
-1. **Create** → `torch.tensor([...])` from a list; `torch.ones(2,3)`; inspect
-   `.shape`. *Lesson: every tensor has a shape; always check it.*
-2. **Operations** → element-wise `+` and `*`. *Lesson: math is element-wise and
-   "broadcasts" over matching shapes.*
-3. **NumPy ↔ Torch** → `torch.from_numpy(arr)` and `tensor.numpy()`. *Lesson: you can
-   move data between the two worlds freely.*
-4. **Reshape** → `t.reshape(3,4)` then back to `(12,)`. *Lesson: reshaping
-   reorders the SAME numbers into a new shape (count must match).*
-5. **Permute** → `img.permute(1,2,0)` turns `(C,H,W)` into `(H,W,C)`. *Lesson:
-   permute swaps AXES without changing the data. PyTorch wants `(C,H,W)`;
-   matplotlib wants `(H,W,C)` — you convert constantly.*
-6. **Squeeze/Unsqueeze** → remove/add size-1 dimensions. *Lesson: `unsqueeze(0)` adds
-   a batch dimension — needed because models expect a batch.*
+### Creating tensors
+
+```python
+t = torch.tensor([[1, 2, 3], [4, 5, 6]])   # build from a Python list
+o = torch.ones(2, 3)                        # a 2×3 tensor full of ones
+t.shape                                     # -> torch.Size([2, 3])
+```
+
+A tensor is created either from existing data (`torch.tensor`) or from a "shape
+recipe" (`torch.ones`, `torch.zeros`, `torch.randn` for random normal values).
+**`.shape` is the most important attribute** — it tells you the size along every
+dimension. Always print it when confused; most bugs are shape mismatches.
+
+### Element-wise math and broadcasting
+
+```python
+a + b      # adds matching positions
+a * b      # multiplies matching positions (NOT matrix multiply)
+a * 2      # multiplies every element by 2
+```
+
+Arithmetic happens **element by element**. If shapes don't match exactly, PyTorch
+tries to **broadcast**: it stretches a smaller dimension (size 1) to match the
+larger one. E.g. a `(3,1)` tensor and a `(1,4)` tensor combine into `(3,4)`. This
+is how you add a single bias value to a whole image without a loop.
+
+### Moving between NumPy and PyTorch
+
+```python
+t = torch.from_numpy(arr)   # NumPy array -> tensor (shares memory!)
+arr = t.numpy()             # tensor -> NumPy array
+```
+
+NumPy is the universal CPU array format used by data loaders and plotting; PyTorch
+adds gradients and GPU support. You convert constantly: load/prepare data in NumPy,
+compute in torch, then convert back to NumPy to plot with matplotlib.
+
+### Reshape — same numbers, new layout
+
+```python
+t = torch.arange(12)        # a flat vector of 12 numbers: shape (12,)
+t.reshape(3, 4)             # rearrange into a 3×4 grid
+t.reshape(3, 4).reshape(12) # and back to flat
+```
+
+`reshape` (or `view`) keeps **the same numbers in the same order** but reinterprets
+the shape. The total count must stay equal (3·4 = 12). You use it to **flatten** an
+image into a vector before a fully-connected layer, and to unflatten afterwards.
+
+### Permute — reorder the axes
+
+```python
+img.permute(1, 2, 0)   # (C, H, W) -> (H, W, C)
+```
+
+`permute` **swaps dimensions** (the arguments are the new order of the old axis
+indices). Unlike reshape, it changes *which axis means what*, not the grouping.
+The classic use: PyTorch stores images as `(C, H, W)`, but matplotlib's `imshow`
+expects `(H, W, C)` — so you permute every time you want to display an image.
+
+### Squeeze / unsqueeze — remove or add a size-1 dimension
+
+```python
+x = img.unsqueeze(0)   # (C, H, W) -> (1, C, H, W)   add a batch dim of size 1
+y = x.squeeze(0)       # (1, C, H, W) -> (C, H, W)    remove it again
+```
+
+Models always expect a **batch** dimension first, even for a single image. So
+before feeding one image to a network you `unsqueeze(0)` to make a batch of one;
+afterwards you `squeeze` it away. `squeeze()` with no argument removes *all*
+size-1 dimensions.
 
 ## 4. How it fits the big picture
 

@@ -51,38 +51,109 @@ the flow models `p(x | y)` and you can generate a chosen digit.
 > **Libraries new here:** `sklearn.datasets.make_moons` and `load_digits` (toy data),
 > `torch.chunk` (split halves), `F.one_hot` (labels for the conditional flow).
 
-## 3. Core code blocks (the TODOs)
+## 3. The core building blocks (what the code does and why)
 
-### Task 1 — Two moons with RealNVP
+### The subnet — a small MLP that predicts the transformation
 
-- `subnet_constructor`: a 2-hidden-layer MLP (Linear-ReLU-Linear-ReLU-Linear).
-- `AffineCouplingLayer.forward`: split into `x1,x2`; `(s_tilde,t)=subnet(x1)`;
-  `s=tanh(s_tilde)`; forward `y2=x2*exp(s)+t` and `log_det=sum(s)`; reverse
-  `x2=(y2-t)*exp(-s)`.
-- `RealNVP`: stack `n_blocks` coupling layers + swaps; forward accumulates
-  `total_log_det`; inverse runs blocks in REVERSE order (undo swap then coupling).
-- `nll_loss`: `mean(0.5*||z||^2 - log_det)`.
-- Inverse check: `f^{-1}(f(x))` should reproduce `x` (max error ~0).
-- Experiment grid over hidden size {16,64,128} × blocks {2,5,10}; plot samples;
-  inspect latent space (`z=f(x)` should look Gaussian).
-- Comment: hidden dimension matters more than #blocks for forming the moons;
-  latent codes are ~N(0,I) but the two classes remain separable in the cloud.
+Each coupling layer owns a tiny neural network (a multi-layer perceptron) that
+reads one half of the data and outputs the scale and shift for the other half:
 
-### Task 2 — Digits with RealNVP (unconditional)
+```python
+def subnet(in_dim, out_dim, hidden):
+    return nn.Sequential(
+        nn.Linear(in_dim, hidden), nn.ReLU(),
+        nn.Linear(hidden, hidden), nn.ReLU(),
+        nn.Linear(hidden, out_dim),     # outputs concatenated (s, t)
+    )
+```
 
-- Flatten 8×8 images to `R^64`; train `RealNVP(64, hidden=128, blocks=8)` for 2000
-  epochs on ALL digits, then a SEPARATE model overfit to a single digit (5).
-- Comment: the single-digit model produces cleaner samples (easier job); the
-  all-digits model is recognizable but blurrier.
+Bigger `hidden` = a more expressive transformation. Note this subnet itself does
+**not** need to be invertible — the coupling structure below provides invertibility.
 
-### Task 3 — Conditional RealNVP
+### The affine coupling layer — expressive *and* invertible
 
-- `ConditionalAffineCouplingLayer`: subnet now receives `concat(x1, one_hot_label)`.
-- `ConditionalRealNVP.forward/inverse`: one-hot encode labels, pass condition into
-  every coupling layer.
-- `train_conditional_realnvp` with NLL; generate samples for fixed labels 0..9.
-- Comment: conditioning lets you CHOOSE which digit to generate, at similar
-  quality to the unconditional all-digits model.
+The clever trick: split the input in two, leave one half alone, and transform the
+other half using only the untouched half.
+
+```python
+def forward(self, x):
+    x1, x2 = torch.chunk(x, 2, dim=1)        # split into two halves
+    s_tilde, t = self.subnet(x1).chunk(2, dim=1)
+    s = torch.tanh(s_tilde)                   # bound the log-scale for stability
+    y2 = x2 * torch.exp(s) + t                # scale-and-shift the second half
+    log_det = s.sum(dim=1)                    # Jacobian is triangular -> sum(s)
+    return torch.cat([x1, y2], dim=1), log_det
+
+def inverse(self, y):
+    y1, y2 = torch.chunk(y, 2, dim=1)
+    s_tilde, t = self.subnet(y1).chunk(2, dim=1)
+    s = torch.tanh(s_tilde)
+    x2 = (y2 - t) * torch.exp(-s)             # exactly undo the forward
+    return torch.cat([y1, x2], dim=1)
+```
+
+- **`torch.chunk(x, 2, dim=1)`** splits a tensor into two equal halves.
+- Because `y1 = x1` is copied and `y2` depends on `x1` only, the inverse is exact:
+  recover `s, t` from `y1`, then `x2 = (y2 - t) * exp(-s)`.
+- The Jacobian is **triangular**, so its log-determinant is just **`sum(s)`** — cheap
+  to compute, which is exactly what the likelihood loss needs.
+- **`tanh`** keeps the log-scale `s` in a safe range so `exp(s)` never explodes.
+
+### Stacking layers with swaps
+
+One coupling layer never transforms its first half. So you stack several and
+**swap** the halves between them, and the inverse must run everything backwards:
+
+```python
+def forward(self, x):
+    log_det_total = 0
+    for layer in self.layers:
+        x, ld = layer(x)
+        x = x.flip(dims=[1])          # swap halves so every dim gets transformed
+        log_det_total += ld
+    return x, log_det_total
+
+def inverse(self, z):
+    for layer in reversed(self.layers):   # REVERSE order
+        z = z.flip(dims=[1])              # undo the swap first
+        z = layer.inverse(z)
+    return z
+```
+
+The forward pass **accumulates** every layer's `log_det`; the inverse undoes each
+step in reverse order. To sample a new image you draw `z ~ N(0, I)` and call
+`inverse(z)`.
+
+### The negative-log-likelihood loss
+
+```python
+def nll_loss(z, log_det):
+    return (0.5 * (z**2).sum(dim=1) - log_det).mean()
+```
+
+This is the change-of-variables formula with a standard-Gaussian latent, constants
+dropped: `0.5*||z||^2` rewards mapping data to the center of the Gaussian, and
+subtracting `log_det` accounts for how much the flow stretched space. Minimizing it
+*maximizes* the exact likelihood of the data.
+
+**Sanity check:** because the flow is invertible by construction,
+`flow.inverse(flow.forward(x))` should return `x` with near-zero error. Sweeping
+the hidden size and number of blocks shows hidden width matters most for fitting
+the two-moons shape, and that `z = f(x)` indeed looks Gaussian afterwards.
+
+### Making the flow conditional
+
+To choose *which* digit to generate, feed the class label into every subnet:
+
+```python
+y_onehot = F.one_hot(labels, num_classes).float()
+s_tilde, t = self.subnet(torch.cat([x1, y_onehot], dim=1)).chunk(2, dim=1)
+```
+
+**`F.one_hot`** turns an integer label into a vector of 0s with a single 1, which is
+concatenated onto the coupling input. Now the flow models `p(x | y)`, and sampling
+with a fixed label produces that specific digit — the same conditioning idea used
+in the VAE (Ex3) and GAN (Ex5), and the foundation for the cINN in Ex7.
 
 ## 4. How it fits the big picture
 

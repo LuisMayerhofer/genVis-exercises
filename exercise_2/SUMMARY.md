@@ -40,36 +40,99 @@ Observed losses in this submission: FC ~59.99, denoising ~59.06, conv ~40.61
 > **Libraries new here:** `torch.nn` layers (Linear, Conv2d, ConvTranspose2d, Flatten,
 > Unflatten, ReLU, Tanh, Softmax), `torch.optim.Adam`, DataLoader + datasets.
 
-## 3. Core code blocks (the TODOs)
+## 3. The core building blocks (what the code does and why)
 
-### Task 1 — Fully-connected autoencoder (class `Autoencoder`)
+### How you define a network in PyTorch
 
-- `encoder` = Sequential of Linear+ReLU shrinking 784 → 128 → 64 → 32 → 16 → 8.
-- `decoder` = Linear+ReLU expanding 8 → ... → 784, final Tanh.
-- `forward`: x → encoder → latent → decoder → reconstruction.
+Every model is a class inheriting from `nn.Module` with two parts: `__init__`
+(declare the layers) and `forward` (describe how data flows through them).
 
-Train with `run_experiment(...)` (given), saves best weights to `.pth`.
+```python
+class Autoencoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = nn.Sequential(...)   # layers that shrink the image
+        self.decoder = nn.Sequential(...)   # layers that rebuild it
+    def forward(self, x):
+        z = self.encoder(x)                 # x -> small latent code z
+        return self.decoder(z)              # z -> reconstruction
+```
 
-### Task 2 — Denoising autoencoder
+`nn.Sequential` chains layers so the output of one is the input of the next. The
+**latent code** `z` is whatever comes out of the encoder — the narrow bottleneck.
 
-- SAME `Autoencoder` class, but run with `noisy=True` so noisy inputs are fed and
-  the clean image is the target (the `prepare_batch` helper adds the noise).
-- **2.1** Written: compare denoising vs plain (slightly lower loss; visibly removes
-  noise, producing a blurred clean image).
+### The fully-connected (FC) layers
 
-### Task 3 — Convolutional autoencoder (class `Conv_Autoencoder`)
+```python
+nn.Linear(784, 128)   # a fully-connected layer: 784 inputs -> 128 outputs
+nn.ReLU()             # activation: replaces negatives with 0 (adds non-linearity)
+nn.Tanh()             # squashes outputs into [-1, 1]
+```
 
-- `encoder`: Conv2d(1→4,k5)+ReLU, Conv2d(4→8,k5)+ReLU, Flatten,
-  Linear(3200→10), Softmax (a 10-dim latent code).
-- `decoder`: Linear(10→400)+ReLU, Linear(400→4000)+ReLU,
-  Unflatten to (10,20,20), ConvTranspose2d(10→10,k5)+ReLU,
-  ConvTranspose2d(10→1,k5)+Tanh.
-- `forward` reshapes flat input to `(B,1,28,28)` and flattens output back.
+- **`nn.Linear(in, out)`** is a matrix multiply + bias; it connects every input to
+  every output. The encoder stacks these to shrink 784 → 128 → 64 → … → 8, the
+  decoder mirrors it to grow 8 → … → 784.
+- **`nn.ReLU`** between layers lets the network learn non-linear functions (without
+  it, stacking Linear layers would collapse into one big Linear layer).
+- **`nn.Tanh`** is used as the *final* layer because the images were normalized to
+  `[-1, 1]`, and Tanh's output range matches exactly.
 
-> **Key new layer:** `ConvTranspose2d` = "deconvolution" / learnable **upsampling** — the
-> decoder's way of growing a small feature map back into a full image.
+### Training loop ingredients
 
-- **3.4** Written: conv beats FC on both loss and visual detail.
+```python
+loss_fn = nn.MSELoss()                          # mean squared error
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+for images, _ in dataloader:                    # DataLoader yields mini-batches
+    recon = model(images)                       # forward pass
+    loss = loss_fn(recon, images)               # how wrong is the reconstruction?
+    optimizer.zero_grad()                        # clear old gradients
+    loss.backward()                              # compute new gradients
+    optimizer.step()                             # nudge weights to reduce loss
+```
+
+These four lines — `zero_grad → forward/loss → backward → step` — are the **universal
+PyTorch training rhythm** you will see in every later exercise. `MSELoss` measures
+the average squared pixel difference; `Adam` is the optimizer that updates weights.
+The `DataLoader` feeds images in shuffled batches.
+
+### Denoising variant — same model, different inputs
+
+A denoising autoencoder uses the **identical** network, but you corrupt the input
+while keeping the *clean* image as the target:
+
+```python
+noisy = images + noise_level * torch.randn_like(images)   # add random noise
+recon = model(noisy)
+loss = loss_fn(recon, images)        # compare to the CLEAN image, not the noisy one
+```
+
+Because the target is clean, the network is forced to *remove* noise rather than
+copy it — which teaches it more robust features.
+
+### The convolutional autoencoder and the key new layer
+
+Instead of `Linear`, the conv version uses layers that respect 2-D image structure:
+
+```python
+nn.Conv2d(1, 4, kernel_size=5)        # encoder: slide learnable filters over image
+nn.Flatten()                          # (B, C, H, W) -> (B, C*H*W) flat vector
+nn.Unflatten(1, (10, 20, 20))         # flat vector -> (B, 10, 20, 20) image shape
+nn.ConvTranspose2d(10, 1, kernel_size=5)   # decoder: learnable UPSAMPLING
+```
+
+- **`nn.Conv2d(in_ch, out_ch, k)`** is the learnable version of the convolution you
+  coded by hand in Ex1: it learns its filters from data. It *shrinks* spatial size
+  and changes the channel count.
+- **`nn.Flatten` / `nn.Unflatten`** convert between image shape and a flat vector so
+  you can plug a `Linear` layer into the bottleneck.
+- **`nn.ConvTranspose2d`** (the important new layer) is the inverse of `Conv2d`: a
+  *learnable upsampling* ("deconvolution") that **grows** a small feature map back
+  into a larger image. It is how decoders enlarge the bottleneck back to full size,
+  and it reappears in the GAN generator (Ex5).
+
+Because conv layers exploit the fact that nearby pixels are related, the conv
+autoencoder reconstructs more sharply than the FC one at fewer parameters.
 
 ## 4. How it fits the big picture
 
