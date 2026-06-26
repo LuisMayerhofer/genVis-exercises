@@ -24,9 +24,9 @@ loss = reconstruction_loss + kl_weight * KL_loss
 ```
 
 - **Reconstruction loss** (here binary cross-entropy): make the output look like the
-  input. Pulls the model toward copying data accurately.
+  input. Pulls the model toward copying data accurately. => Good Reconstruction
 - **KL divergence loss**: pulls each encoded distribution toward the standard normal
-  `N(0, I)`. This **regularizes** the latent space so it is smooth and samplable.
+  `N(0, I)`. This **regularizes** the latent space so it is smooth and samplable. => Good latent space
 
 These two FIGHT each other; `kl_weight` balances them (here 0.0001, small).
 

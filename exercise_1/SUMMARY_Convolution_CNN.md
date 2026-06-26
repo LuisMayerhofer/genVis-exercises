@@ -155,3 +155,6 @@ the max over the channel dimension collapses RGB into one saliency heatmap.
 > **Exam takeaway:** Be able to (a) explain convolution and the role of kernel size `n`
 > and `sigma`, (b) state why a 1×1 conv = channel mixing, (c) describe how a saliency
 > map is computed (gradient of class score w.r.t. input pixels).
+
+Answer (c): Use backpropagation through the input instead of through the weights (using
+  backward() with requires_grad_() set on the input) to see how much the networks decision relied on a pixel.

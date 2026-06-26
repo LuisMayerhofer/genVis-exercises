@@ -77,19 +77,6 @@ nn.Tanh()             # squashes outputs into [-1, 1]
 - **`nn.Tanh`** is used as the *final* layer because the images were normalized to
   `[-1, 1]`, and Tanh's output range matches exactly.
 
-### Training loop ingredients
-
-```python
-loss_fn = nn.MSELoss()                          # mean squared error
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-for images, _ in dataloader:                    # DataLoader yields mini-batches
-    recon = model(images)                       # forward pass
-    loss = loss_fn(recon, images)               # how wrong is the reconstruction?
-    optimizer.zero_grad()                        # clear old gradients
-    loss.backward()                              # compute new gradients
-    optimizer.step()                             # nudge weights to reduce loss
-```
 
 These four lines — `zero_grad → forward/loss → backward → step` — are the **universal
 PyTorch training rhythm** you will see in every later exercise. `MSELoss` measures
@@ -146,6 +133,6 @@ autoencoder reconstructs more sharply than the FC one at fewer parameters.
   (Ex3) and GAN (Ex5) do. So Ex2 sets up the central question of the course:
   *"How do we make the latent space something we can SAMPLE from?"*
 
-> **Exam takeaway:** Explain encoder/bottleneck/decoder, why MSE + Tanh, what a
+> **Exam takeaway:** Explain encoder/bottleneck/decoder, why Mean Squared Error (MSE) + Tanh, what a
 > denoising AE adds, and why a convolutional AE beats a fully-connected one. Know
 > that a plain AE compresses but cannot generate.
