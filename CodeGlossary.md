@@ -69,3 +69,40 @@ z = mean + exp(0.5*log_var) * eps,   eps ~ N(0, I)
 ```
 The randomness lives in `eps` (no gradient needed), while `mean` and `log_var` get
 gradients. This is THE key idea that makes VAEs trainable.
+
+## Straight-through estimator
+The argmin operation used in VQ-VAE quantization is non-differentiable, so gradients cannot flow back to the encoder. The straight-through estimator fixes this with one line:
+```
+z_q = z_e + (z_q - z_e).detach()
+```
+The forward pass sees `z_q` (correct, discrete), but the backward pass ignores the detached `(z_q - z_e)` term and passes gradients straight through to `z_e` as if quantization were the identity. This lets the encoder train despite the hard discrete lookup.
+
+## GAN Formulas
+
+**Minimax objective:**
+$$V(D,G) = \mathbb{E}_x[\log D(x)] + \mathbb{E}_z[\log(1 - D(G(z)))]$$
+
+**Optimal discriminator** (maximize over D, fix G):
+$$D^*(x) = \frac{p_{data}(x)}{p_{data}(x) + p_G(x)}$$
+*Derived from:* $\max_y\ a\log y + b\log(1-y) \Rightarrow y = \frac{a}{a+b}$
+
+**Generator optimum** (substitute $D^*$):
+$$V(D^*, G) = -\log 4 + 2 \cdot \text{JSD}(p_{data} \| p_G)$$
+Global min when $p_G = p_{data}$: $D^*(x) = \frac{1}{2}$, $V = -\log 4$
+
+**Saturating vs. non-saturating generator loss:**
+
+| | Formula | Problem |
+|---|---|---|
+| Saturating | $\log(1 - D(G(z)))$ | near-zero gradient when $D(G(z)) \approx 0$ |
+| **Non-saturating** | $-\log D(G(z))$ | large gradient when $D(G(z)) \approx 0$ ✓ |
+
+**R1 gradient penalty:**
+$$\frac{\gamma}{2} \|\nabla_x D(x)\|^2$$
+
+**Label smoothing:** real target $= 0.9$ instead of $1.0$
+
+**Spherical interpolation (SLERP):**
+$$z(t) = \frac{\sin((1-t)\,\omega)\,z_1 + \sin(t\,\omega)\,z_2}{\sin(\omega)}$$
+
+
